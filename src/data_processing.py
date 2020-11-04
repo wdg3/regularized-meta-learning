@@ -35,6 +35,7 @@ class DataGenerator(object):
 
 		num_train = 2500
 		num_val = 250
+		self.num_test = len(tickers) - num_train - num_val
 		self.metatrain_tickers = tickers[:num_train]
 		self.metaval_tickers = tickers[num_train:num_train + num_val]
 		self.metatest_tickers = tickers[num_train + num_val:]

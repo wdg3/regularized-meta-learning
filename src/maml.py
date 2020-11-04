@@ -107,6 +107,7 @@ class MAML(tf.keras.Model):
 			task_output_tr_pre, task_loss_tr_pre, task_accuracy_tr_pre = None, None, None
 			task_outputs_ts, task_losses_ts, task_accuracies_ts = [], [], []
 
+			closes = []
 			temp_weights = dict(weights).copy()
 			if self.learn_inner_update_lr:
 				temp_lrs = dict(self.inner_update_lr_dict).copy()
@@ -130,8 +131,13 @@ class MAML(tf.keras.Model):
 
 			for j in range(num_inner_updates):
 				task_accuracies_ts.append(accuracy(tf.argmax(input=label_ts, axis=1), tf.argmax(input=tf.nn.softmax(task_outputs_ts[j]), axis=1)))
+				labs = tf.argmax(label_ts, axis=1)
+				preds = tf.argmax(tf.nn.softmax(task_outputs_ts[j]), axis=1)
+				close = tf.abs(labs - preds) < 2
+				closes.append(np.mean(close))
+			close = np.mean(closes)
 
-			task_output = [task_output_tr_pre, task_outputs_ts, task_loss_tr_pre, task_losses_ts, task_accuracy_tr_pre, task_accuracies_ts]
+			task_output = ([task_output_tr_pre, task_outputs_ts, task_loss_tr_pre, task_losses_ts, task_accuracy_tr_pre, task_accuracies_ts], close)
 
 			return task_output
 
@@ -140,6 +146,7 @@ class MAML(tf.keras.Model):
 								  False, meta_batch_size, num_inner_updates)
 		out_dtype = [tf.float32, [tf.float32]*num_inner_updates, tf.float32, [tf.float32]*num_inner_updates]
 		out_dtype.extend([tf.float32, [tf.float32]*num_inner_updates])
+		out_dtype = (out_dtype, tf.float32)
 		task_inner_loop_partial = partial(task_inner_loop, meta_batch_size=meta_batch_size, num_inner_updates=num_inner_updates)
 		result = tf.map_fn(task_inner_loop_partial, elems=((d_tr, q_tr), (d_ts, q_ts), label_tr, label_ts),
 			dtype=out_dtype, parallel_iterations=meta_batch_size)
@@ -148,7 +155,7 @@ class MAML(tf.keras.Model):
 
 def outer_train_step(inp, model, optim, meta_batch_size=16, num_inner_updates=1):
 	with tf.GradientTape(persistent=True) as outer_tape:
-		result = model(inp, meta_batch_size=meta_batch_size, num_inner_updates=num_inner_updates)
+		(result, close) = model(inp, meta_batch_size=meta_batch_size, num_inner_updates=num_inner_updates)
 
 		outputs_tr, outputs_ts, losses_tr_pre, losses_ts, accuracies_tr_pre, accuracies_ts = result
 		total_losses_ts = [tf.reduce_mean(loss_ts) for loss_ts in losses_ts]
@@ -160,10 +167,10 @@ def outer_train_step(inp, model, optim, meta_batch_size=16, num_inner_updates=1)
 	total_accuracy_tr_pre = tf.reduce_mean(accuracies_tr_pre)
 	total_accuracies_ts = [tf.reduce_mean(accuracy_ts) for accuracy_ts in accuracies_ts]
 
-	return outputs_tr, outputs_ts, total_loss_tr_pre, total_losses_ts, total_accuracy_tr_pre, total_accuracies_ts
+	return (outputs_tr, outputs_ts, total_loss_tr_pre, total_losses_ts, total_accuracy_tr_pre, total_accuracies_ts), close
 
 def outer_eval_step(inp, model, meta_batch_size=16, num_inner_updates=1):
-	result = model(inp, meta_batch_size=meta_batch_size, num_inner_updates=num_inner_updates)
+	(result, close) = model(inp, meta_batch_size=meta_batch_size, num_inner_updates=num_inner_updates)
 
 	outputs_tr, outputs_ts, losses_tr_pre, losses_ts, accuracies_tr_pre, accuracies_ts = result
 
@@ -173,7 +180,7 @@ def outer_eval_step(inp, model, meta_batch_size=16, num_inner_updates=1):
 	total_accuracy_tr_pre = tf.reduce_mean(accuracies_tr_pre)
 	total_accuracies_ts = [tf.reduce_mean(accuracy_ts) for accuracy_ts in accuracies_ts]
 
-	return outputs_tr, outputs_ts, total_loss_tr_pre, total_losses_ts, total_accuracy_tr_pre, total_accuracies_ts
+	return (outputs_tr, outputs_ts, total_loss_tr_pre, total_losses_ts, total_accuracy_tr_pre, total_accuracies_ts), close
 
 def meta_train_fn(model, exp_string, data_generator, n_way=3, meta_train_iterations=5000, meta_batch_size=16,
 				  log=True, logdir='../logs/', k_shot=5, num_inner_updates=1, meta_lr=0.001,
@@ -193,9 +200,8 @@ def meta_train_fn(model, exp_string, data_generator, n_way=3, meta_train_iterati
 	train_accuracy = tf.keras.metrics.CategoricalAccuracy('train_accuracy')
 	test_accuracy = tf.keras.metrics.CategoricalAccuracy('test_accuracy')
 
-	current_time = datetime.datetime.now().strftime('%Y%m%d-%H%M%S')
-	train_log_dir = logdir + '/gradient_tape/' + current_time + '/train'
-	test_log_dir = logdir + '/gradient_tape/' + current_time + '/test'
+	train_log_dir = logdir + '/gradient_tape/' + exp_string + '/train'
+	test_log_dir = logdir + '/gradient_tape/' + exp_string + '/test'
 	train_summary_writer = tf.summary.create_file_writer(train_log_dir)
 	test_summary_writer = tf.summary.create_file_writer(test_log_dir)
 
@@ -265,6 +271,42 @@ def meta_train_fn(model, exp_string, data_generator, n_way=3, meta_train_iterati
 			print('Saving to ', model_file)
 			model.save_weights(model_file)
 
+def meta_test_fn(model, data_generator, n_way = 3, meta_batch_size=16, k_shot=5, num_inner_updates=1):
+	num_classes = data_generator.N
+	NUM_META_TEST_POINTS = data_generator.num_test
+
+	meta_test_accuracies=[]
+	meta_test_outs = []
+	closes = []
+	
+	for _ in range(NUM_META_TEST_POINTS):
+		(d_data, q_data, labs) = data_generator.sample_batch('meta_test', meta_batch_size, shuffle=True)
+		q_tr, q_ts = q_data[:, :, :k_shot, :, :], q_data[:, :, k_shot:, :, :]
+		q_tr = tf.reshape(q_tr, [meta_batch_size, n_way * k_shot, q_tr.shape[-2] * q_tr.shape[-1]])
+		q_ts = tf.reshape(q_ts, [meta_batch_size, n_way * k_shot, q_ts.shape[-2] * q_ts.shape[-1]])
+		d_tr, d_ts = d_data[:, :, :k_shot, :, :], d_data[:, :, k_shot:, :, :]
+		d_tr = tf.reshape(d_tr, [meta_batch_size, n_way * k_shot, d_tr.shape[-2] * d_tr.shape[-1]])
+		d_ts = tf.reshape(d_ts, [meta_batch_size, n_way * k_shot, d_ts.shape[-2] * d_ts.shape[-1]])
+		label_tr, label_ts = labs[:, :, :k_shot, :], labs[:, :, :k_shot, :]
+		label_tr = tf.reshape(label_tr, [meta_batch_size, n_way * k_shot, label_tr.shape[-1]])
+		label_ts = tf.reshape(label_ts, [meta_batch_size, n_way * k_shot, label_ts.shape[-1]])
+
+		inp = ((d_tr, q_tr), (d_ts, q_ts), label_tr, label_ts)
+		(result, close) = outer_eval_step(inp, model, meta_batch_size=meta_batch_size, num_inner_updates=num_inner_updates)
+
+		meta_test_accuracies.append(result[-1][-1])
+		meta_test_outs.append(result[1])
+		closes.append(close)
+
+	meta_test_accuracies = np.array(meta_test_accuracies)
+	means = np.mean(meta_test_accuracies)
+	stds = np.std(meta_test_accuracies)
+	ci95 = 1.96*stds/np.sqrt(NUM_META_TEST_POINTS)
+
+	print('Mean meta-test accuracy/loss, stddev, and confidence intervals')
+	print((means, stds, ci95))
+	print(np.mean(closes))
+
 
 def run_model(n_way = 3, k_shot = 5, meta_batch_size = 16, meta_lr = 0.001,
 			  inner_update_lr = 0.4, num_units = 32, num_inner_updates = 1,
@@ -297,7 +339,7 @@ def run_model(n_way = 3, k_shot = 5, meta_batch_size = 16, meta_lr = 0.001,
 
 	if meta_train:
 		if resume:
-			model_file = tf.train.latest_checkpoint(logdir + 'gradient_tape/' + exp_string)
+			model_file = tf.train.latest_checkpoint(logdir + exp_string)
 			model.load_weights(model_file)
 		meta_train_fn(model, exp_string, data_generator, n_way,
 					  meta_train_iterations, meta_batch_size, log, logdir,
@@ -311,4 +353,4 @@ def run_model(n_way = 3, k_shot = 5, meta_batch_size = 16, meta_lr = 0.001,
 
 		meta_test_fn(model, data_generator, n_way, meta_batch_size, k_shot, num_inner_updates)
 
-run_model(n_way = 3, k_shot = 10, meta_train_iterations=5000, num_inner_updates=1, learn_inner_update_lr=False)
+run_model(meta_train=False, n_way = 3, k_shot = 10, meta_train_iterations=5000, num_inner_updates=1, learn_inner_update_lr=False)
