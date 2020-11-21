@@ -56,7 +56,7 @@ counts = daily['ticker'].value_counts()
 t1 = [t for t in daily['ticker'].unique() if counts[t] > int(3*255)]
 daily = daily[daily['ticker'].isin(t1)]
 counts = quarterly['ticker'].value_counts()
-t2 = [t for t in quarterly['ticker'].unique() if counts[t] >= 9]
+t2 = [t for t in quarterly['ticker'].unique() if counts[t] >= 12]
 quarterly = quarterly[quarterly['ticker'].isin(t2)]
 print('done.')
 
@@ -68,10 +68,31 @@ daily = daily[daily['ticker'].isin(t2)]
 quarterly = quarterly[quarterly['ticker'].isin(t1)]
 print('done.')
 
+
+print('Combining datasets...', end='', flush=True)
+combined = pd.merge(quarterly, daily, left_on=['ticker', 'datekey'], right_on=['ticker', 'date'], how='left')
+print('done.')
+
+print('Calculating regression/classification labels...', end='', flush=True)
+labels = pd.Series(np.zeros(len(combined)), dtype='float64')
+for i in range(len(combined) - 1):
+	d = combined.iloc[i]
+	n = combined.iloc[i + 1]
+	if d['ticker'] == n['ticker']:
+		result = (float(d['close']) / float(n['close'])) - 1
+	else:
+		result = 0
+	labels.at[i] = result
+print('done.')
+
 print(str(daily.shape[0]) + ' daily data points\n' + str(daily.shape[1] - 2) + ' daily features\n' +
-	str(quarterly.shape[0]) + ' quarterly data points\n' + str(quarterly.shape[1] - 4) + ' quarterly features')
+	str(quarterly.shape[0]) + ' quarterly data points\n' + str(quarterly.shape[1] - 4) + ' quarterly features\n' + 
+	str(len(labels)) + ' label data points\n' +
+	str(combined.shape[0]) + ' combined data points\n' + str(combined.shape[1] - 4) + ' combined features')
 
 print('Converting and saving...', end='', flush=True)
 feather.write_feather(daily, '../data/daily.dat')
 feather.write_feather(quarterly, '../data/quarterly.dat')
+feather.write_feather(combined, '../data/combined.dat')
+feather.write_feather(pd.DataFrame(labels), '../data/labels.dat')
 print('done.')
