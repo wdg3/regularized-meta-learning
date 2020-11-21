@@ -483,4 +483,4 @@ def run_model(n_way = 3, k_shot = 5, meta_batch_size = 16, meta_lr = 0.01,
 
 		meta_test_fn(model, data_generator, n_way, meta_batch_size, k_shot, num_inner_updates)
 
-run_model(meta_reg = 'l2', conv = False, num_units = 32, meta_train=False, learn_inner_update_lr=True, meta_batch_size=32, inner_update_lr=0.1, n_way = 1, k_shot = 3, meta_train_iterations=10000, num_inner_updates=0)
+run_model(meta_reg = 'l2', conv = True, num_units = 32, meta_train=False, learn_inner_update_lr=True, meta_batch_size=32, inner_update_lr=0.1, n_way = 1, k_shot = 3, meta_train_iterations=10000, num_inner_updates=1)
