@@ -346,6 +346,8 @@ def meta_test_fn(model, data_generator, n_way = 3, meta_batch_size=16, k_shot=5,
 	label_neg = []
 	mini = 1000
 	maxi = -1000
+
+	print("Running meta-test...", end='', flush=True)
 	
 	for _ in range(1):
 		(data,  labs) = data_generator.sample_batch('meta_test', NUM_META_TEST_POINTS, shuffle=True)
@@ -411,11 +413,11 @@ def meta_test_fn(model, data_generator, n_way = 3, meta_batch_size=16, k_shot=5,
 	print(data_generator.metatest_tickers)
 
 def get_return(model, data, labels, num_inner_updates):
-	d_tr, d_ts = data[:, :, -2, :, :], data[:, :, -2, :, :]
-	d_tr = tf.reshape(d_tr, [1, len(data) - 2, d_tr.shape[-2], d_tr.shape[-1]])
+	d_tr, d_ts = data[:, :, -8:-2:2, :, :], data[:, :, -2, :, :]
+	d_tr = tf.reshape(d_tr, [1, 3, d_tr.shape[-2], d_tr.shape[-1]])
 	d_ts = tf.reshape(d_ts, [1, 1, d_ts.shape[-2], d_ts.shape[-1]])
-	label_tr, label_ts = labels[:, :, -3, :], labels[:, :, -2, :]
-	label_tr = tf.reshape(label_tr, [1, len(labels) - 2, label_tr.shape[-1]])
+	label_tr, label_ts = labels[:, :, -8:-2:2, :], labels[:, :, -2, :]
+	label_tr = tf.reshape(label_tr, [1, 3, label_tr.shape[-1]])
 	label_ts = tf.reshape(label_ts, [1, 1, label_ts.shape[-1]])
 
 	inp = (d_tr, d_ts, label_tr, label_ts)
@@ -452,10 +454,11 @@ def run_model(n_way = 3, k_shot = 5, meta_batch_size = 16, meta_lr = 0.01,
 	if meta_train_inner_update_lr == -1:
 		meta_train_inner_update_lr = inner_update_lr
 
-	exp_string = 'maml_cls_.clipped_.meta_reg_learned_' + str(meta_reg) + '.conv_' + str(conv) + '.n_way_' + str(n_way) + '.mbs_' + str(meta_batch_size) + '.k_shot_' + str(meta_train_k_shot)\
-				 + '.inner_numstep_' + str(num_inner_updates) + '.inner_updatelr_' + str(meta_train_inner_update_lr)\
-				 + '.learn_inner_update_lr' + str(learn_inner_update_lr)\
-				 + '.dim_hidden' + str(num_units)
+	#exp_string = 'maml_cls_.clipped_.meta_reg_learned_' + str(meta_reg) + '.conv_' + str(conv) + '.n_way_' + str(n_way) + '.mbs_' + str(meta_batch_size) + '.k_shot_' + str(meta_train_k_shot)\
+	#			 + '.inner_numstep_' + str(num_inner_updates) + '.inner_updatelr_' + str(meta_train_inner_update_lr)\
+	#			 + '.learn_inner_update_lr' + str(learn_inner_update_lr)\
+	#			 + '.dim_hidden' + str(num_units)
+	exp_string = 'maml_cls_.meta_reg_learned_dict_True.conv_True.n_way_1.mbs_32.k_shot_3.inner_numstep_1.inner_updatelr_0.1.learn_inner_update_lrTrue.dim_hidden32'
 	#exp_string = 'maml_cls_.meta_reg_learned_True.conv_True.n_way_1.mbs_32.k_shot_3.inner_numstep_1.inner_updatelr_0.1.learn_inner_update_lrTrue.dim_hidden32'
 	#exp_string ='maml_cls.meta_reg_Trueconv_True.n_way_1.mbs_32.k_shot_3.inner_numstep_1.inner_updatelr_0.04.learn_inner_update_lrTrue.dim_hidden32'
 	#exp_string = 'maml_cls_conv_1.mbs_32.k_shot_3.inner_numstep_1.inner_updatelr_0.04.learn_inner_update_lrTrue.dim_hidden32'
@@ -480,4 +483,4 @@ def run_model(n_way = 3, k_shot = 5, meta_batch_size = 16, meta_lr = 0.01,
 
 		meta_test_fn(model, data_generator, n_way, meta_batch_size, k_shot, num_inner_updates)
 
-run_model(meta_reg = 'l2', conv = False, num_units = 32, meta_train=False, learn_inner_update_lr=True, meta_batch_size=32, inner_update_lr=0.1, n_way = 1, k_shot = 3, meta_train_iterations=10000, num_inner_updates=1)
+run_model(meta_reg = 'l2', conv = False, num_units = 32, meta_train=False, learn_inner_update_lr=True, meta_batch_size=32, inner_update_lr=0.1, n_way = 1, k_shot = 3, meta_train_iterations=10000, num_inner_updates=0)
