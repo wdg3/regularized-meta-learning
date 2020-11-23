@@ -1,3 +1,20 @@
+#########################
+# maml.py #
+#########################
+# Implements MAML for use on financial
+# forecasting data. In addition to the basic
+# framework implemented in Homework 2, experiments
+# with different kinds of meta-regularization
+# in the outer optimization loop. Also uses gradient
+# clipping in the inner loop which leads to better
+# stability during training. Multiple types of inner
+# architectures are specified, and MSE is implemented as
+# the default loss instead of cross entropy.
+
+# Written by Will Geoghegan for CS330
+# final project, Fall 2020. Based on work
+# by CS330 course staff.
+
 from data_processing import *
 import numpy as np
 import tensorflow as tf
@@ -6,12 +23,16 @@ import datetime
 
 seed = 123
 
-def cross_entropy_loss(pred, label):
+# Simple MSE loss function.
+def mse_loss(pred, label):
 	return tf.keras.losses.MSE(label, pred)
 
+# Accuracy in this context is defined as whether the signs of output
+# and label are the same.
 def accuracy(labels, predictions):
 	return tf.reduce_mean(tf.cast(tf.equal(tf.sign(labels), tf.sign(predictions)), dtype=tf.float32))
 
+# Single convolutional layer
 def conv_block(inp, weight, bweight, bn, activation=tf.nn.relu):
 	stride, no_stride = [1,2,2,1], [1,1,1,1]
 	output = tf.nn.conv2d(input=inp, filters=weight, strides=no_stride, padding='SAME') + bweight
@@ -19,6 +40,7 @@ def conv_block(inp, weight, bweight, bn, activation=tf.nn.relu):
 	normed = activation(normed)
 	return normed
 
+# Single feedforward layer
 def weight_block(inp, weight, bweight, bn, activation=tf.nn.relu):
 	output = tf.matmul(inp, weight) + bweight
 	normed = bn(output)
@@ -39,6 +61,7 @@ class ModelLayers(tf.keras.layers.Layer):
 		dtype = tf.float32
 		weight_initializer = tf.keras.initializers.GlorotUniform()
 
+		# Define our network layers depending on which kind we want
 		if self.conv:
 			weights['w1'] = tf.Variable(weight_initializer(shape=[self.dim_input, self.dim_input_time, 1, self.dim_hidden]),name='w1', dtype=dtype)
 			weights['b1'] = tf.Variable(tf.zeros([self.dim_hidden]), name='b2')
@@ -63,6 +86,7 @@ class ModelLayers(tf.keras.layers.Layer):
 
 		self.ff_weights = weights
 
+	# Call the appropriate inner network 
 	def call(self, inp, weights):
 		if self.conv:
 			inp = tf.reshape(inp, [inp.shape[0], inp.shape[1], inp.shape[2], 1])
@@ -77,7 +101,10 @@ class ModelLayers(tf.keras.layers.Layer):
 			hidden3 = weight_block(hidden1, weights['w2'], weights['b2'], self.bn2)#, weights['b2'], self.bn2)
 			return tf.matmul(hidden3, weights['w3']) + weights['b3']
 
+# This class implements a MAML meta-learner with multiple specificable 
+# inner architectures and meta-regularization schema.
 class MAML(tf.keras.Model):
+	# This function initializes the model.
 	def __init__(self, dim_input_time=1, dim_input=1, dim_output=1, num_inner_updates=1,
 				 inner_update_lr=0.4, num_units=32, k_shot=5, learn_inner_update_lr=False,
 				 conv = True, meta_reg=False):
@@ -86,7 +113,7 @@ class MAML(tf.keras.Model):
 		self.dim_input = dim_input
 		self.dim_output = dim_output
 		self.inner_update_lr = inner_update_lr
-		self.loss_func = partial(cross_entropy_loss)
+		self.loss_func = partial(mse_loss)
 		self.dim_hidden = num_units
 		self.meta_reg = meta_reg
 
@@ -101,6 +128,7 @@ class MAML(tf.keras.Model):
 
 		self.ff_layers = ModelLayers(self.dim_input_time, self.dim_input, self.dim_hidden, self.dim_output, conv)
 
+		# Initialize beta parameters if necessary.
 		if self.meta_reg=='gaussian':
 			self.meta_reg_dict = {}
 			for (key, val) in self.ff_layers.ff_weights.items():
@@ -114,12 +142,15 @@ class MAML(tf.keras.Model):
 				if 'b' not in key:
 					self.meta_reg_dict[key] = [tf.Variable(1.0, name = 'meta_reg_%s' % key, constraint= tf.keras.constraints.non_neg())]
 
+		# Initialize learning rates
 		self.learn_inner_update_lr = learn_inner_update_lr
 		if self.learn_inner_update_lr:
 			self.inner_update_lr_dict = {}
 			for key in self.ff_layers.ff_weights.keys():
 				self.inner_update_lr_dict[key] = [tf.Variable(self.inner_update_lr, name='inner_update_lr_%s_%d' % (key, j)) for j in range(num_inner_updates)]
 
+	# This function calls the model on a set of inputs. Starting from theta metaparameters,
+	# updates phi accordingly for best performance on the new task.
 	def call(self, inp, meta_batch_size=16, num_inner_updates=1):
 		def task_inner_loop(inp, reuse=True, meta_batch_size=16, num_inner_updates=1):
 			input_tr, input_ts, label_tr, label_ts = inp
@@ -129,7 +160,6 @@ class MAML(tf.keras.Model):
 
 			closes = []
 			temp_weights = dict(weights).copy()
-			print
 			if self.learn_inner_update_lr:
 				temp_lrs = self.inner_update_lr_dict.copy()
 			task_output_tr_pre = self.ff_layers(input_tr, temp_weights)
@@ -139,16 +169,18 @@ class MAML(tf.keras.Model):
 				task_losses_ts=[self.loss_func(task_outputs_ts[0], label_ts)]
 
 			else:
+				# Inner loop. Implements gradient clipping to help stability.
+				# Uses individual learning rates per variable and inner step
+				# to optimize learning.
 				with tf.GradientTape(persistent=True) as inner_tape:
 					for i in range(num_inner_updates):
 						out = self.ff_layers(input_tr, temp_weights)
 						loss = self.loss_func(out, label_tr)
-						#if self.meta_reg == 'gaussian':
-						#	dl_dw = inner_tape.gradient(loss, self.dict_copy)
-						#	self.dict_copy = temp_weights.copy()
-						#else:
+						if self.meta_reg == 'gaussian':
+							dl_dw = inner_tape.gradient(loss, self.dict_copy)
+							self.dict_copy = temp_weights.copy()
+
 						dl_dw = inner_tape.gradient(loss, temp_weights)
-						#dl_dw = {(key, tf.clip_by_value(val, -1.0, 1.0)) for (key, val) in dl_dw.items()}
 						if self.learn_inner_update_lr:
 							temp_weights = dict(zip(temp_weights.keys(), [temp_weights[key] - temp_lrs[key][i] * tf.clip_by_value(dl_dw[key], -1.0, 1.0) for key in temp_weights.keys()]))
 						else:
@@ -186,6 +218,8 @@ class MAML(tf.keras.Model):
 
 		return result
 
+# This function trains on a task and updates the outer loop accordingly,
+# using the specified meta-regularization.
 def outer_train_step(inp, model, optim, meta_batch_size=16, num_inner_updates=1):
 	with tf.GradientTape(persistent=True) as outer_tape:
 		if model.meta_reg == 'gaussian':
@@ -198,11 +232,13 @@ def outer_train_step(inp, model, optim, meta_batch_size=16, num_inner_updates=1)
 
 					val = val + noise
 					model.ff_layers.ff_weights[key] = val
+		# Calculate l2 meta-penalty
 		elif model.meta_reg == 'l2':
 			penalty = tf.reduce_sum([model.meta_reg_dict[key][0] * tf.nn.l2_loss(var) for (key, var) in model.ff_layers.ff_weights.items() if 'b' not in key])
 		(result, close) = model(inp, meta_batch_size=meta_batch_size, num_inner_updates=num_inner_updates)
 		outputs_tr, outputs_ts, losses_tr_pre, losses_ts, accuracies_tr_pre, accuracies_ts = result
 		
+		# l2 meta-penalty is applied to the unapdated parameters
 		if model.meta_reg == 'l2':
 			total_losses_ts = [loss_ts + penalty for loss_ts in losses_ts]
 		else:
@@ -217,6 +253,7 @@ def outer_train_step(inp, model, optim, meta_batch_size=16, num_inner_updates=1)
 
 	return (outputs_tr, outputs_ts, total_loss_tr_pre, total_losses_ts, total_accuracy_tr_pre, total_accuracies_ts), close
 
+# This function executes a task without updating the outer loops with loss gradients.
 def outer_eval_step(inp, model, meta_batch_size=16, num_inner_updates=1):
 	(result, close) = model(inp, meta_batch_size=meta_batch_size, num_inner_updates=num_inner_updates)
 
@@ -230,13 +267,15 @@ def outer_eval_step(inp, model, meta_batch_size=16, num_inner_updates=1):
 
 	return (outputs_tr, outputs_ts, total_loss_tr_pre, total_losses_ts, total_accuracy_tr_pre, total_accuracies_ts), close
 
+# This function samples a training batch (or validation batch), saving the appropriate metrics
+# every 10 iterations.
 def meta_train_fn(model, exp_string, data_generator, n_way=3, meta_train_iterations=5000, meta_batch_size=16,
 				  log=True, logdir='../logs/', k_shot=5, num_inner_updates=1, meta_lr=0.001,
 				  resume_itr = 0):
 	SUMMARY_INTERVAL = 10
 	SAVE_INTERVAL = 100
 	PRINT_INTERVAL = 10
-	TEST_PRINT_INTERVAL = PRINT_INTERVAL# * 5
+	TEST_PRINT_INTERVAL = PRINT_INTERVAL * 5
 
 	pre_accuracies, post_accuracies = [], []
 	pre_losses, post_losses = [], []
@@ -254,8 +293,7 @@ def meta_train_fn(model, exp_string, data_generator, n_way=3, meta_train_iterati
 	test_summary_writer = tf.summary.create_file_writer(test_log_dir)
 
 	for itr in range(resume_itr, meta_train_iterations):
-		if (itr%10) != 0:
-			print('Iteration %d' % itr)
+		# Sample training batch
 		(data,  labs) = data_generator.sample_batch('meta_train', meta_batch_size, shuffle=True)
 		d_tr, d_ts = data[:, :, :k_shot, :, :], data[:, :, k_shot:, :, :]
 		d_tr = tf.reshape(d_tr, [meta_batch_size, n_way * k_shot, d_tr.shape[-2], d_tr.shape[-1]])
@@ -272,17 +310,18 @@ def meta_train_fn(model, exp_string, data_generator, n_way=3, meta_train_iterati
 			pre_losses.append(result[2])
 			post_losses.append(result[3][-1])
 
+		# Print train performance
 		if (itr!=-1) and itr % PRINT_INTERVAL == 0:
 			print_str = 'Iteration %d: pre-inner-loop train accuracy: %.5f, post-inner-loop test accuracy: %.5f' % (itr, np.mean(pre_accuracies), np.mean(post_accuracies))
 			loss_str = '"""""""""""": pre-inner-loop train loss: %.5f, post-inner-loop test loss %.5f' % (np.mean(pre_losses), np.mean(post_losses))
 			print(print_str)
 			print(loss_str)
-			print(np.mean(label_ts > 0))
 			print()
 
 			pre_accuracies, post_accuracies = [], []
 			pre_losses, post_losses = [], []
 
+		# Print and save validation performance
 		if (itr != 0) and itr % TEST_PRINT_INTERVAL == 0:
 			(data,  labs) = data_generator.sample_batch('meta_val', meta_batch_size, shuffle=True)
 			d_tr, d_ts = data[:, :, :k_shot, :, :], data[:, :, k_shot:, :, :]
@@ -295,6 +334,7 @@ def meta_train_fn(model, exp_string, data_generator, n_way=3, meta_train_iterati
 			inp = (d_tr, d_ts, label_tr, label_ts)
 			(result, close) = outer_eval_step(inp, model, meta_batch_size=meta_batch_size, num_inner_updates=num_inner_updates)
 
+			# Tensorboard metrics
 			with train_summary_writer.as_default():
 				tf.summary.scalar('accuracy', result[-2], step=itr)
 				tf.summary.scalar('mse', result[2], step=itr)
@@ -325,7 +365,7 @@ def meta_train_fn(model, exp_string, data_generator, n_way=3, meta_train_iterati
 			print('Meta-validation pre-inner-loop train accuracy: %.5f, meta-validation post-inner-loop test accuracy: %.5f' % (result[-2], result[-1][-1]))
 			if model.learn_inner_update_lr:
 				lrs = [var.numpy() for var in model.trainable_variables if 'inner_update_lr' in var.name]
-				print('Variable learning rate mean and stdde')
+				print('Variable learning rate mean and stddev')
 				print(np.mean(lrs), np.std(lrs))
 
 		if (itr != 0) and itr % SAVE_INTERVAL == 0:
@@ -333,6 +373,9 @@ def meta_train_fn(model, exp_string, data_generator, n_way=3, meta_train_iterati
 			print('Saving to ', model_file)
 			model.save_weights(model_file)
 
+# The meta-test function runs on each individual test task to calculate
+# standard deviation statistics, and then tests return as that is the metric
+# we are most interested in.
 def meta_test_fn(model, data_generator, n_way = 3, meta_batch_size=16, k_shot=5, num_inner_updates=1):
 	num_classes = data_generator.N
 	NUM_META_TEST_POINTS = data_generator.num_test
@@ -349,7 +392,7 @@ def meta_test_fn(model, data_generator, n_way = 3, meta_batch_size=16, k_shot=5,
 
 	print("Running meta-test...", end='', flush=True)
 	
-	for _ in range(1):
+	for _ in range(0):
 		(data,  labs) = data_generator.sample_batch('meta_test', NUM_META_TEST_POINTS, shuffle=True)
 		d_tr, d_ts = data[:, :, :k_shot, :, :], data[:, :, k_shot:, :, :]
 		d_tr = tf.reshape(d_tr, [NUM_META_TEST_POINTS, n_way * k_shot, d_tr.shape[-2], d_tr.shape[-1]])
@@ -375,16 +418,16 @@ def meta_test_fn(model, data_generator, n_way = 3, meta_batch_size=16, k_shot=5,
 
 			closes.append(close)
 
-	meta_test_accuracies = np.array(meta_test_accuracies)
-	means = np.mean(meta_test_accuracies)
-	stds = np.std(meta_test_accuracies)
-	ci95 = 1.96*stds/np.sqrt(NUM_META_TEST_POINTS)
+	#meta_test_accuracies = np.array(meta_test_accuracies)
+	#means = np.mean(meta_test_accuracies)
+	#stds = np.std(meta_test_accuracies)
+	#ci95 = 1.96*stds/np.sqrt(NUM_META_TEST_POINTS)
 
 	returns = []
 	actuals = []
 	preds = []
+	print('Calculating real Q2-Q3 2020 return...', end='', flush=True)
 	for ticker in data_generator.metatest_tickers:
-		print(ticker)
 		samples = data_generator.combined[data_generator.combined['ticker'] == ticker].iloc[data_generator.c_length:]
 		num_samples = len(samples)
 		data = np.zeros((1, n_way, num_samples, data_generator.c_length, data_generator.c_dim))
@@ -402,16 +445,22 @@ def meta_test_fn(model, data_generator, n_way = 3, meta_batch_size=16, k_shot=5,
 	weighted_returns = []
 	for i in range(len(returns)):
 		weighted_returns.append((abs(preds[i])/total_weight)*returns[i])
-	print('Mean meta-test accuracy and stddev')
-	print((means, stds))
-	print('Mean meta-test loss and stddev')
-	print((np.mean(meta_post_losses), np.std(meta_post_losses)))
-	print(np.mean(closes))
+	
+	# Display test statistics.
+	#print('Mean meta-test accuracy and stddev:')
+	#print((means, stds))
+	#print('Mean meta-test loss and stddev:')
+	#print((np.mean(meta_post_losses), np.std(meta_post_losses)))
+	print('Test quarter return, simple rule:')
 	print(np.mean(returns))
+	print('Test quarter return, weighted rule:')
 	print(np.sum(weighted_returns))
+	print('Actual test quarter market return:')
 	print(np.mean(actuals))
-	print(data_generator.metatest_tickers)
 
+# This function gets the test return of a company on the most recent
+# datapoint training on prior datapoints as a new task. Used for calculating
+# real test return.
 def get_return(model, data, labels, num_inner_updates):
 	d_tr, d_ts = data[:, :, -8:-2:2, :, :], data[:, :, -2, :, :]
 	d_tr = tf.reshape(d_tr, [1, 3, d_tr.shape[-2], d_tr.shape[-1]])
@@ -433,7 +482,8 @@ def run_model(n_way = 3, k_shot = 5, meta_batch_size = 16, meta_lr = 0.01,
 			  learn_inner_update_lr = False, log=True, logdir = '../logs/',
 			  data_path = '../data/', meta_train = True, meta_train_iterations = 5000,
 			  meta_train_k_shot = -1, meta_train_inner_update_lr=-1,
-			  time_horizon = 40, resume=False, resume_itr=0, conv=True, meta_reg=False):
+			  time_horizon = 40, resume=False, resume_itr=0, conv=True, meta_reg=False,
+			  exp_input=None):
 
 	data_generator = DataGenerator(n_way, k_shot * 2, n_way, k_shot *2)
 
@@ -454,16 +504,10 @@ def run_model(n_way = 3, k_shot = 5, meta_batch_size = 16, meta_lr = 0.01,
 	if meta_train_inner_update_lr == -1:
 		meta_train_inner_update_lr = inner_update_lr
 
-	#exp_string = 'maml_cls_.clipped_.meta_reg_learned_' + str(meta_reg) + '.conv_' + str(conv) + '.n_way_' + str(n_way) + '.mbs_' + str(meta_batch_size) + '.k_shot_' + str(meta_train_k_shot)\
-	#			 + '.inner_numstep_' + str(num_inner_updates) + '.inner_updatelr_' + str(meta_train_inner_update_lr)\
-	#			 + '.learn_inner_update_lr' + str(learn_inner_update_lr)\
-	#			 + '.dim_hidden' + str(num_units)
-	exp_string = 'maml_cls_.meta_reg_learned_dict_True.conv_True.n_way_1.mbs_32.k_shot_3.inner_numstep_1.inner_updatelr_0.1.learn_inner_update_lrTrue.dim_hidden32'
-	#exp_string = 'maml_cls_.meta_reg_learned_True.conv_True.n_way_1.mbs_32.k_shot_3.inner_numstep_1.inner_updatelr_0.1.learn_inner_update_lrTrue.dim_hidden32'
-	#exp_string ='maml_cls.meta_reg_Trueconv_True.n_way_1.mbs_32.k_shot_3.inner_numstep_1.inner_updatelr_0.04.learn_inner_update_lrTrue.dim_hidden32'
-	#exp_string = 'maml_cls_conv_1.mbs_32.k_shot_3.inner_numstep_1.inner_updatelr_0.04.learn_inner_update_lrTrue.dim_hidden32'
-	#exp_string = 'maml_cls_1.mbs_32.k_shot_3.inner_numstep_1.inner_updatelr_0.04.learn_inner_update_lrTrue.dim_hidden64'
-	#exp_string = 'maml_cls.conv_False1.mbs_32.k_shot_3.inner_numstep_0.inner_updatelr_0.04.learn_inner_update_lrFalse.dim_hidden32'
+	exp_string = 'maml_cls_.clipped_.meta_reg_learned_' + str(meta_reg) + '.conv_' + str(conv) + '.n_way_' + str(n_way) + '.mbs_' + str(meta_batch_size) + '.k_shot_' + str(meta_train_k_shot)\
+				 + '.inner_numstep_' + str(num_inner_updates) + '.inner_updatelr_' + str(meta_train_inner_update_lr)\
+				 + '.learn_inner_update_lr' + str(learn_inner_update_lr)\
+				 + '.dim_hidden' + str(num_units)
 
 	if meta_train:
 		if resume:
@@ -475,6 +519,8 @@ def run_model(n_way = 3, k_shot = 5, meta_batch_size = 16, meta_lr = 0.01,
 		meta_test_fn(model, data_generator, n_way, meta_batch_size, k_shot, num_inner_updates)
 
 	else:
+		exp_string = exp_input
+
 		meta_batch_size = 1
 		print(exp_string)
 		model_file = tf.train.latest_checkpoint(logdir + exp_string)
@@ -483,4 +529,4 @@ def run_model(n_way = 3, k_shot = 5, meta_batch_size = 16, meta_lr = 0.01,
 
 		meta_test_fn(model, data_generator, n_way, meta_batch_size, k_shot, num_inner_updates)
 
-run_model(meta_reg = 'l2', conv = True, num_units = 32, meta_train=False, learn_inner_update_lr=True, meta_batch_size=32, inner_update_lr=0.1, n_way = 1, k_shot = 3, meta_train_iterations=10000, num_inner_updates=1)
+#run_model(meta_reg = 'l2', conv = True, num_units = 32, meta_train=False, learn_inner_update_lr=True, meta_batch_size=32, inner_update_lr=0.1, n_way = 1, k_shot = 3, meta_train_iterations=10000, num_inner_updates=1)

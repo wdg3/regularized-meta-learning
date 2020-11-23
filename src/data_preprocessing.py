@@ -1,3 +1,13 @@
+#########################
+# data_preprocessing.py #
+#########################
+# Converts csv-level financial data
+# into pandas-based binaries for quick
+# data pipelining during model training.
+
+# Written by Will Geoghegan for CS330
+# final project, Fall 2020.
+
 import numpy as np
 import pandas as pd
 import pyarrow.feather as feather
@@ -68,11 +78,12 @@ daily = daily[daily['ticker'].isin(t2)]
 quarterly = quarterly[quarterly['ticker'].isin(t1)]
 print('done.')
 
-
+# Merge quarterly and daily data.
 print('Combining datasets...', end='', flush=True)
 combined = pd.merge(quarterly, daily, left_on=['ticker', 'datekey'], right_on=['ticker', 'date'], how='left')
 print('done.')
 
+# Calculate percentage change in following datapoint as y label.
 print('Calculating regression/classification labels...', end='', flush=True)
 labels = pd.Series(np.zeros(len(combined)), dtype='float64')
 for i in range(len(combined) - 1):
@@ -90,6 +101,7 @@ print(str(daily.shape[0]) + ' daily data points\n' + str(daily.shape[1] - 2) + '
 	str(len(labels)) + ' label data points\n' +
 	str(combined.shape[0]) + ' combined data points\n' + str(combined.shape[1] - 4) + ' combined features')
 
+# Save everything
 print('Converting and saving...', end='', flush=True)
 feather.write_feather(daily, '../data/daily.dat')
 feather.write_feather(quarterly, '../data/quarterly.dat')
