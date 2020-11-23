@@ -483,9 +483,9 @@ def run_model(n_way = 3, k_shot = 5, meta_batch_size = 16, meta_lr = 0.01,
 			  data_path = '../data/', meta_train = True, meta_train_iterations = 5000,
 			  meta_train_k_shot = -1, meta_train_inner_update_lr=-1,
 			  time_horizon = 40, resume=False, resume_itr=0, conv=True, meta_reg=False,
-			  exp_input=None):
+			  exp_input=None, demo=False):
 
-	data_generator = DataGenerator(n_way, k_shot * 2, n_way, k_shot *2)
+	data_generator = DataGenerator(n_way, k_shot * 2, n_way, k_shot *2, demo)
 
 	dim_output = data_generator.dim_output
 	dim_input_time = data_generator.c_length

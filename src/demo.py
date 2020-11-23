@@ -30,5 +30,5 @@ titles = ["multiple-learned-beta meta-regularized feedforward DNN under MAML",
 		  "non-meta-regularized feedforward DNN under MAML"]
 for i in range(len(convs)):
 	print("Following results correspond to " + titles[i] + " model.")
-	run_model(meta_reg = meta_regs[i], conv = convs[i], num_units = hiddens[i], meta_train=False, learn_inner_update_lr=learns[i], meta_batch_size=32, inner_update_lr=inner_lrs[i], n_way = 1, k_shot = 3, meta_train_iterations=10000, num_inner_updates=inner_steps[i], exp_input=exp_strings[i])
+	run_model(demo = True, meta_reg = meta_regs[i], conv = convs[i], num_units = hiddens[i], meta_train=False, learn_inner_update_lr=learns[i], meta_batch_size=32, inner_update_lr=inner_lrs[i], n_way = 1, k_shot = 3, meta_train_iterations=10000, num_inner_updates=inner_steps[i], exp_input=exp_strings[i])
 	model = None

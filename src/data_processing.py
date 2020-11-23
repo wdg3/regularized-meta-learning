@@ -23,7 +23,7 @@ from functools import partial
 # before settling on regression, but N-way specification remains for
 # easy extension back to classification
 class DataGenerator(object):
-	def __init__(self, N, K, test_N, test_K):
+	def __init__(self, N, K, test_N, test_K, demo):
 		self.N = N
 		self.K = K
 		self.test_N = test_N
@@ -37,12 +37,16 @@ class DataGenerator(object):
 		assert(os.path.isdir(data_path))
 
 		print('Loading data...', end='', flush=True)
-		self.daily = feather.read_feather(data_path + 'daily.dat')
+		#self.daily = feather.read_feather(data_path + 'daily.dat')
 		#self.quarterly = feather.read_feather(data_path + 'quarterly.dat')
-		self.combined = feather.read_feather(data_path + 'combined.dat')
-		self.labels = feather.read_feather(data_path + 'labels.dat')
+		if demo == False:
+			self.combined = feather.read_feather(data_path + 'combined.dat')
+			self.labels = feather.read_feather(data_path + 'labels.dat')
+		else:
+			self.combined = feather.read_feather(data_path + 'combined_demo.dat')
+			self.labels = feather.read_feather(data_path + 'labels_demo.dat')
 		print('done.')
-		tickers = list(self.daily['ticker'].unique())
+		tickers = list(self.combined['ticker'].unique())
 
 		print('Removing tickers with insufficient data for K=' + str(self.K) + '...', end='', flush=True)
 		random.seed = 0
